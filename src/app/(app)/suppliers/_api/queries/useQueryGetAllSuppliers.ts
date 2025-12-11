@@ -1,0 +1,37 @@
+import { SEARCH_PARAMS } from "@/data/global_data";
+import { useManageUrl } from "@/hooks/use-manage-url";
+import api from "@/lib/axios";
+import { omitEmpty } from "@/lib/utils";
+import { useQuery } from "@tanstack/react-query";
+type GetAllSuppliersProps = {
+enabled?: boolean;
+refetchOnMount?: boolean;
+};
+export const useQueryGetAllSuppliers = ({
+   enabled = true,
+  refetchOnMount = true,
+}: GetAllSuppliersProps) => {
+   const { getParams } = useManageUrl();
+    const { page, search } = getParams;
+  
+    const omitEmptyParams = omitEmpty({
+      ...getParams,
+      per_page: SEARCH_PARAMS.per_page,
+    }); 
+    const query = useQuery({
+    queryKey: ["get-suppliers-query", page, search],
+    enabled,
+    refetchOnMount,
+    queryFn: async () => {
+      return (
+        await api.get(`/suppliers`, {
+           params: omitEmptyParams,
+        })
+      ).data?.data;
+    },
+  });
+
+  return {
+    ...query,
+  };
+};

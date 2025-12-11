@@ -1,0 +1,46 @@
+"use client";
+import React from "react";
+import AppViewDialog from "../AppViewDialog";
+import { ModalType } from "@/types/global";
+import { UserFormType } from "@/app/(app)/users/_types/user_types";
+
+
+
+type TProps = ModalType & {
+  title: string;
+  formData: UserFormType;
+  
+};
+
+
+
+const UserCard = ({ title, open, onOpenChange, formData }: TProps) => {
+  console.log("🚀 ~ UserCard ~ formData:", formData.data)
+  
+
+  return (
+    <AppViewDialog title={title} open={open} onOpenChange={onOpenChange}>
+      <div className="text-sm">
+        {/* User Info */}
+        <div className="flex items-center justify-between mb-3">
+        
+          
+        </div>
+       
+        <div className="space-y-2">
+          <p>
+            <strong>Name:</strong> {formData.data.name}
+          </p>
+          <p>
+            <strong>Email:</strong> {formData.data.email}
+          </p>
+          <p>
+            <strong>Role:</strong> {String(formData.data.user_role)}
+          </p>
+        </div>
+      </div>
+    </AppViewDialog>
+  );
+};
+
+export default UserCard;

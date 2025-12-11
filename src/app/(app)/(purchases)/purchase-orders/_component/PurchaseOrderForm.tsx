@@ -1,0 +1,842 @@
+"use client";
+import { useForm, useFieldArray, useWatch } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useCallback, useEffect, useMemo } from "react";
+// import toast from "react-hot-toast";
+import { GlobalFormType } from "@/types/global";
+import { useQueryClient } from "@tanstack/react-query";
+import { isAxiosError } from "axios";
+import {
+  PurchaseOrderProductSchemaType,
+  PurchaseOrderSchema,
+  PurchaseOrderSchemaType,
+} from "../_types/purchase_order_types";
+import { useMutationCreatePurchaseOrder } from "../_api/mutations/useMutationCreateIPurchaseOrder";
+import { useMutationUpdatePurchaseOrder } from "../_api/mutations/useMutationUpdatePurchaseOrder";
+import { useQueryGetPrePurchaseOrder } from "../_api/queries/useQueryGetPrePurchaseOrder";
+import { omitEmpty, showErrors } from "@/lib/utils";
+import { FormInput } from "@/components/forms/FormInput";
+import { useQueryGetPurchaseOrderByID } from "../_api/queries/useQueryGetPurchaseOrderByID";
+import AppTable from "@/components/base/AppTable";
+import { TableCell, TableFooter, TableRow } from "@/components/ui/table";
+import { PRODUCT_TYPE } from "@/data/global_data";
+import { optionFormat } from "@/utils/optionsFormat";
+import { Button } from "@/components/ui/button";
+import { Plus, Trash2 } from "lucide-react";
+import { Spinner } from "@/components/ui/shadcn-io/spinner";
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormMessage,
+} from "@/components/ui/form";
+import BaseDatePicker from "@/components/base/BaseDatePicker";
+import { format } from "date-fns";
+import { useQueryGetAllIngredientsDropdown } from "@/app/(app)/ingredients/_ingredients/_api/queries/useQueryGetAllIngredientsDropdown";
+import BaseSelect from "@/components/base/BaseSelect";
+import { Input } from "@/components/ui/input";
+import { useQueryGetAllUnitsDropdown } from "@/app/(app)/units/_api/queries/useQueryGetAllUnitsDropdown";
+import { toast } from "sonner";
+
+type TProps = {
+  onCancel: () => void;
+} & GlobalFormType;
+// Product Cell Component
+function ProductCell({ index, control, products, loading }: any) {
+  return (
+    <FormField
+      control={control}
+      name={`purchase_items.${index}.product`}
+      render={({ field, fieldState }) => (
+        <FormItem>
+          <FormControl>
+            {loading ? (
+              <div className="flex items-center min-w-20 justify-center">
+                <Spinner variant="bars" />
+              </div>
+            ) : (
+              <BaseSelect
+                placeholder="Select a product"
+                options={products}
+                fieldState={fieldState}
+                value={field.value?.id ? String(field.value.id) : ""}
+                onValueChange={(val) => {
+                  if (!!val) {
+                    const selected = products.find(
+                      (b: { id: string | number; name: string }) =>
+                        String(b.id) == val
+                    );
+                    field.onChange(selected);
+                  }
+                }}
+              />
+            )}
+          </FormControl>
+          <FormMessage />
+        </FormItem>
+      )}
+    />
+  );
+}
+
+// Quantity Cell Component
+function QuantityCell({ index, control }: any) {
+  return (
+    <FormField
+      control={control}
+      name={`purchase_items.${index}.request_quantity`}
+      render={({ field }) => (
+        <FormItem>
+          <FormControl>
+            <Input type="number" placeholder="Enter quantity" {...field} />
+          </FormControl>
+          <FormMessage />
+        </FormItem>
+      )}
+    />
+  );
+}
+
+// Received Quantity Cell Component
+function ReceivedQuantityCell({ index, control }: any) {
+  return (
+    <FormField
+      control={control}
+      name={`purchase_items.${index}.receive_quantity`}
+      render={({ field }) => (
+        <FormItem>
+          <FormControl>
+            <Input type="number" placeholder="Enter quantity" {...field} />
+          </FormControl>
+          <FormMessage />
+        </FormItem>
+      )}
+    />
+  );
+}
+
+// Unit Cell Component
+function UnitCell({ index, control }: any) {
+  const product = useWatch({
+    control,
+    name: `purchase_items.${index}.product`,
+  });
+
+  const productID = product?.id;
+
+  const { data: units, isLoading: isLoadingUnits } =
+    useQueryGetAllUnitsDropdown({
+      enabled: !!productID,
+      params: { product_id: productID || "" },
+    });
+
+  return (
+    <FormField
+      control={control}
+      name={`purchase_items.${index}.unit`}
+      render={({ field, fieldState }) => (
+        <FormItem>
+          <FormControl>
+            {isLoadingUnits ? (
+              <div className="flex items-center min-w-20 justify-center">
+                <Spinner variant="bars" />
+              </div>
+            ) : (
+              <BaseSelect
+                placeholder={
+                  productID ? "Select a unit" : "Select a product first"
+                }
+                options={units ?? []}
+                fieldState={fieldState}
+                value={field.value?.id ? String(field.value.id) : ""}
+                disabled={!productID}
+                onValueChange={(val) => {
+                  const selected = units?.find(
+                    (u: any) => String(u.id) === val
+                  );
+                  field.onChange(selected);
+                }}
+              />
+            )}
+          </FormControl>
+          <FormMessage />
+        </FormItem>
+      )}
+    />
+  );
+}
+
+// Unit Price Cell
+function UnitPriceCell({ index, control }: any) {
+  return (
+    <FormField
+      control={control}
+      name={`purchase_items.${index}.unit_price`}
+      render={({ field }) => (
+        <FormItem>
+          <FormControl>
+            <Input type="number" placeholder="Unit price" {...field} />
+          </FormControl>
+          <FormMessage />
+        </FormItem>
+      )}
+    />
+  );
+}
+
+// Total Price Cell (auto-calculated)
+function TotalPriceCell({ index, control }: any) {
+  const total = useWatch({
+    control,
+    name: `purchase_items.${index}.total_price`,
+  });
+
+  return <span>{Number(total || 0).toFixed(2)}</span>;
+}
+
+export default function PurchaseOrderForm({ id = "", type, onCancel }: TProps) {
+  const form = useForm<PurchaseOrderSchemaType>({
+    resolver: zodResolver(PurchaseOrderSchema),
+  });
+  const {
+    control,
+    handleSubmit,
+    reset,
+    setValue,
+    watch,
+    formState: { errors },
+  } = form;
+  console.log("👉 ~ PurchaseOrderForm ~ errors:", errors);
+  const { fields, prepend, remove } = useFieldArray({
+    control,
+    name: "purchase_items",
+  });
+  const selectedSupplierID = watch("supplier")?.id || "";
+  const isUpdate = type === "update_po";
+  const { data: products, isLoading: isLoadingProducts } =
+    useQueryGetAllIngredientsDropdown({
+      params: {
+        type: PRODUCT_TYPE.general,
+        supplier_id: selectedSupplierID,
+      },
+    });
+  // ✅ Queries
+  const { data: prePOData, status: prePOStatus } = useQueryGetPrePurchaseOrder({
+    enabled: type === "create_po" && !!id,
+    id: id,
+  });
+  const { data: poData, status: poStatus } = useQueryGetPurchaseOrderByID({
+    enabled: type === "update_po" && !!id,
+    id: id,
+  });
+  // ✅ Unified data + status
+  const data = type === "create_po" ? prePOData : poData;
+  const status = type === "create_po" ? prePOStatus : poStatus;
+
+  type PurchaseOrdersAPIType = (typeof data.data)[number];
+
+  // ✅ Watch for recalculation
+  const purchaseItems = useWatch({ control, name: "purchase_items" });
+  const wTaxPercentage = useWatch({ control, name: "w_tax_percentage" });
+
+  useEffect(() => {
+    if (!purchaseItems) return;
+
+    // Update each line total
+    purchaseItems.forEach(
+      (item: PurchaseOrderProductSchemaType, index: number) => {
+        console.log("👉 ~ PurchaseOrderForm ~ item:", item);
+        const qty = Number(
+          isUpdate ? item.receive_quantity || 0 : item.request_quantity || 0
+        );
+        const unitPrice = Number(item.unit_price || 0);
+        const lineTotal = qty * unitPrice;
+
+        if (lineTotal !== Number(item.total_price)) {
+          setValue(`purchase_items.${index}.total_price`, String(lineTotal), {
+            shouldValidate: true,
+            shouldDirty: true,
+          });
+        }
+      }
+    );
+
+    // Totals
+    const totalAmount = purchaseItems.reduce(
+      (sum: number, item: PurchaseOrderProductSchemaType) =>
+        sum + Number(item.total_price || 0),
+      0
+    );
+
+    const nonVatableAmount = purchaseItems
+      .filter((item) => Number(item.vat) === 0)
+      .reduce((sum, item) => sum + Number(item.total_price || 0), 0);
+
+    const vatableAmount = totalAmount - nonVatableAmount;
+    const vatAmount = vatableAmount > 0 ? (vatableAmount / 1.12) * 0.12 : 0;
+
+    const wTax = Number(wTaxPercentage || 0);
+    const wTaxAmount = (totalAmount * wTax) / 100;
+    const dueAmount = totalAmount - wTaxAmount;
+
+    // Update form fields
+    setValue("total_amount", String(totalAmount));
+    setValue("non_vatable_amount", String(nonVatableAmount));
+    setValue("vatable_amount", String(vatableAmount));
+    setValue("vat_amount", String(vatAmount));
+    setValue("w_tax_amount", String(wTaxAmount));
+    setValue("due_amount", String(dueAmount));
+  }, [purchaseItems, wTaxPercentage, setValue, isUpdate]);
+
+  function formatPurchaseOrder(
+    data: PurchaseOrdersAPIType
+  ): PurchaseOrderSchemaType {
+    console.log("🚀 ~ formatPurchaseOrder ~ PurchaseOrdersAPIType:", data);
+    const purchaseItems = (data.purchase_request_items || []).map(
+      (item: any) => ({
+        id: item.id,
+        product: optionFormat(item.product),
+        unit: optionFormat(item.unit),
+        unit_id: optionFormat(item.unit),
+        request_quantity: (item?.request_quantity || item?.quantity) ?? "",
+        receive_quantity: item?.receive_quantity ?? "",
+        unit_price: item.unit_price ?? "",
+        vat: item.vat ?? "",
+        total_price: item.total_price ?? "",
+      })
+    );
+
+    return {
+      purchase_request_id: data.purchase_request_id ?? "",
+      supplier: data.supplier,
+      branch: data.branch,
+      purchase_date: data.pr_date ?? "",
+      expected_delivery_date: data?.expected_delivery_date || "",
+      note: data.note ?? "",
+      vat_percentage: "12",
+      vat_amount: "0",
+      w_tax_percentage: String(data.supplier?.w_tax ?? 0),
+      w_tax_amount: "0",
+      non_vatable_amount: "0",
+      vatable_amount: "0",
+      total_amount: "0",
+      due_amount: "0",
+      purchase_items: purchaseItems,
+    };
+  }
+
+  useEffect(() => {
+    if (data) {
+      const formattedData = formatPurchaseOrder(data);
+      reset(formattedData);
+    }
+  }, [data, reset]);
+
+  const { mutate: createPurchaseOrder, isPending } =
+    useMutationCreatePurchaseOrder();
+  const {
+    mutate: updatePurchaseOrder,
+    isPending: isPendingUpdatePurchaseOrder,
+  } = useMutationUpdatePurchaseOrder();
+  const queryClient = useQueryClient();
+
+  const onSuccess = (type: "create" | "update") => {
+    const message =
+      type === "create"
+        ? "Purchase order is created successfully!"
+        : "Purchase order is updated successfully!";
+    queryClient.invalidateQueries({ queryKey: ["get-items-query"] });
+    queryClient.invalidateQueries({
+      queryKey: ["get-purchase-requests-query"],
+    });
+    queryClient.invalidateQueries({
+      queryKey: ["get-purchases-order-id"],
+    });
+    toast.success(message);
+    reset();
+    onCancel();
+  };
+
+  const onError = (type: "create" | "update", error: Error) => {
+    const fallback =
+      type === "create"
+        ? "Failed to create PurchaseOrder."
+        : "Failed to update PurchaseOrder.";
+    // if (isAxiosError(error)) {
+    //   toast.error(error.response?.data?.message || fallback);
+    // } else {
+    //   toast.error("Something went wrong.");
+    // }
+    showErrors(error, fallback);
+  };
+
+  const onSubmit = (values: PurchaseOrderSchemaType) => {
+    const payload = omitEmpty({
+      ...values,
+      id: data.id,
+    }) as PurchaseOrderSchemaType;
+    const isCreate = type === "create_po";
+    const action: "create" | "update" = isCreate ? "create" : "update";
+
+    (isCreate ? createPurchaseOrder : updatePurchaseOrder)(payload, {
+      onSuccess: () => onSuccess(action),
+      onError: (err) => onError(action, err),
+    });
+  };
+  const headings = [
+    {
+      title: "Supplier",
+      values: watch("supplier.name"),
+    },
+    {
+      title: "Email",
+      values: watch("supplier.email"),
+    },
+    {
+      title: "Address",
+      values: watch("supplier.address"),
+    },
+    {
+      title: "Phone",
+      values: watch("supplier.phone"),
+    },
+    {
+      title: "TIN",
+      values: watch("supplier.tin_number"),
+    },
+  ];
+  const isLoading = isLoadingProducts || status == "pending";
+  const isSubmitting = isPending || isPendingUpdatePurchaseOrder;
+  // Memoize remove handler
+  const handleRemove = useCallback(
+    (index: number) => {
+      remove(index);
+    },
+    [remove]
+  );
+  // Memoize columns with fields.length as dependency
+  const columns = useMemo(
+    () =>
+      [
+        {
+          header: "Product",
+          accessorKey: "product_id",
+          cell: ({ row }: any) => (
+            <ProductCell
+              index={row.index}
+              control={control}
+              products={products}
+              loading={isLoadingProducts}
+            />
+          ),
+        },
+
+        {
+          header: "Quantity",
+          accessorKey: "request_quantity",
+          cell: ({ row }: any) => (
+            <QuantityCell index={row.index} control={control} />
+          ),
+        },
+
+        {
+          header: "Received Quantity",
+          accessorKey: "receive_quantity",
+          cell: ({ row }: any) => (
+            <ReceivedQuantityCell index={row.index} control={control} />
+          ),
+        },
+
+        {
+          header: "UOM",
+          accessorKey: "unit",
+          cell: ({ row }: any) => (
+            <UnitCell index={row.index} control={control} />
+          ),
+        },
+
+        {
+          header: "Price",
+          accessorKey: "unit_price",
+          cell: ({ row }: any) => (
+            <UnitPriceCell index={row.index} control={control} />
+          ),
+        },
+
+        {
+          header: "Total Price",
+          accessorKey: "total_price",
+          cell: ({ row }: any) => (
+            <TotalPriceCell index={row.index} control={control} />
+          ),
+        },
+
+        {
+          header: "Action",
+          id: "actions",
+          cell: ({ row }: any) => (
+            <Button
+              type="button"
+              variant="destructive"
+              className="w-full"
+              onClick={() => handleRemove(row.index)}
+            >
+              <Trash2 />
+            </Button>
+          ),
+        },
+      ].filter((col) => {
+        if (col.accessorKey === "receive_quantity" && type !== "update_po")
+          return false;
+        return true;
+      }),
+    [control, products, isLoadingProducts, handleRemove, type, fields.length]
+  );
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-32">
+        <Spinner variant="bars" />
+      </div>
+    );
+  }
+
+  return (
+    <Form {...form}>
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-4 w-full">
+        <div className="grid grid-cols-3 ">
+          {headings.map(({ title, values }, index) => (
+            <div
+              key={index}
+              className="p-1 whitespace-nowrap max-w-full truncate space-x-2"
+            >
+              <span className="font-semibold text-primary">{title} :</span>
+              <span className="text-muted-foreground">{values}</span>
+            </div>
+          ))}
+          <div className="p-1 whitespace-nowrap max-w-full truncate flex items-center gap-1.5">
+            <span className="font-semibold text-primary">Date : </span>
+
+            <FormField
+              control={control}
+              name="expected_delivery_date"
+              render={({ field, fieldState }) => (
+                <FormItem>
+                  <FormControl>
+                    <BaseDatePicker
+                      placeholder="Select purchase date"
+                      value={field.value}
+                      invalid={fieldState.invalid}
+                      onSelect={(date: Date) => {
+                        if (date) {
+                          field.onChange(format(date, "yyyy-MM-dd"));
+                        }
+                      }}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+          {/* <div className="flex items-center pb-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() =>
+                prepend({
+                  product: {
+                    id: "",
+                    name: "",
+                  },
+                  unit: {
+                    id: "",
+                    name: "",
+                  },
+                  request_quantity: 0,
+                  unit_price: 0,
+                  vat: 0,
+                  total_price: 0,
+                })
+              }
+            >
+              <Plus />
+              Add Products
+            </Button>
+          </div> */}
+          <div className="col-span-full">
+            <AppTable
+              data={fields ?? []}
+              // columns={[
+              //   {
+              //     header: "Product",
+              //     accessorKey: "product_id",
+              //     cell: ({ row }: any) => {
+              //       const index = row.index;
+              //       return (
+              //         <FormField
+              //           control={control}
+              //           name={`purchase_items.${index}.product`}
+              //           render={({ field, fieldState }) => (
+              //             <FormItem>
+              //               <FormControl>
+              //                 <BaseSelect
+              //                   placeholder="Select a product"
+              //                   options={products}
+              //                   fieldState={fieldState}
+              //                   value={
+              //                     field.value?.id ? String(field.value.id) : ""
+              //                   }
+              //                   onValueChange={(val) => {
+              //                     if (!!val) {
+              //                       const selected = products.find(
+              //                         (b: {
+              //                           id: string | number;
+              //                           name: string;
+              //                         }) => String(b.id) == val
+              //                       );
+              //                       field.onChange(selected);
+              //                     }
+              //                   }}
+              //                 />
+              //               </FormControl>
+              //               <FormMessage />
+              //             </FormItem>
+              //           )}
+              //         />
+              //       );
+              //     },
+              //   },
+              //   {
+              //     header: "Quantity",
+              //     accessorKey: "request_quantity",
+              //     cell: ({ row }: any) => {
+              //       const index = row.index;
+              //       return (
+              //         <FormField
+              //           control={control}
+              //           name={`purchase_items.${index}.request_quantity`}
+              //           render={({ field }) => (
+              //             <FormItem>
+              //               <FormControl>
+              //                 <Input
+              //                   type="number"
+              //                   placeholder="Enter quantity"
+              //                   {...field}
+              //                 />
+              //               </FormControl>
+              //               <FormMessage />
+              //             </FormItem>
+              //           )}
+              //         />
+              //       );
+              //     },
+              //   },
+              //   {
+              //     header: "Received Quantity",
+              //     accessorKey: "receive_quantity",
+              //     cell: ({ row }: any) => {
+              //       const index = row.index;
+              //       return (
+              //         <FormField
+              //           control={control}
+              //           name={`purchase_items.${index}.receive_quantity`}
+              //           render={({ field }) => (
+              //             <FormItem>
+              //               <FormControl>
+              //                 <Input
+              //                   type="number"
+              //                   placeholder="Enter quantity"
+              //                   {...field}
+              //                 />
+              //               </FormControl>
+              //               <FormMessage />
+              //             </FormItem>
+              //           )}
+              //         />
+              //       );
+              //     },
+              //   },
+              //   {
+              //     header: "UOM",
+              //     accessorKey: "unit",
+              //     cell: ({ row }: any) => {
+              //       const index = row.index;
+              //       const product = watch(`purchase_items.${index}.product`);
+              //       const productID = product?.id;
+
+              //       return <UnitCell index={index} id={productID} />;
+              //     },
+              //   },
+              //   {
+              //     header: "Price",
+              //     accessorKey: "unit_price",
+              //     cell: ({ row }: any) => {
+              //       const index = row.index;
+              //       return (
+              //         <FormField
+              //           control={control}
+              //           name={`purchase_items.${index}.unit_price`}
+              //           render={({ field }) => (
+              //             <FormItem>
+              //               <FormControl>
+              //                 <Input
+              //                   type="number"
+              //                   placeholder="Enter quantity"
+              //                   {...field}
+              //                 />
+              //               </FormControl>
+              //               <FormMessage />
+              //             </FormItem>
+              //           )}
+              //         />
+              //       );
+              //     },
+              //   },
+              //   {
+              //     header: "Total Price",
+              //     accessorKey: "total_price",
+              //     cell: ({ row }: any) => {
+              //       const index = row.index;
+              //       const total = watch(`purchase_items.${index}.total_price`);
+              //       return <span>{Number(total).toFixed(2)}</span>;
+              //     },
+              //   },
+              //   {
+              //     header: "Action",
+              //     id: "actions",
+              //     cell: ({ row }: any) => {
+              //       const index = row.index;
+              //       return (
+              //         <Button
+              //           type="button"
+              //           variant="destructive"
+              //           className="w-full"
+              //           onClick={() => remove(index)}
+              //         >
+              //           <Trash2 />
+              //         </Button>
+              //       );
+              //     },
+              //   },
+              // ].filter((data) => {
+              //   if (
+              //     data.accessorKey == "receive_quantity" &&
+              //     type != "update_po"
+              //   )
+              //     return false;
+              //   return true;
+              // })}
+              columns={columns}
+              footer={
+                <>
+                  <TableFooter className="bg-transparent">
+                    <TableRow>
+                      <TableCell
+                        colSpan={type === "update_po" ? 5 : 4}
+                        className="text-end"
+                      >
+                        VATABLE SALES:
+                      </TableCell>
+                      <TableCell colSpan={2} className="border">
+                        {Number(watch("vatable_amount") || 0).toFixed(2)}
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell
+                        colSpan={type === "update_po" ? 5 : 4}
+                        className="text-end"
+                      >
+                        NON VATABLE SALES:
+                      </TableCell>
+                      <TableCell colSpan={2} className="border">
+                        {Number(watch("non_vatable_amount") || 0).toFixed(2)}
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell
+                        colSpan={type === "update_po" ? 5 : 4}
+                        className="text-end"
+                      >
+                        VAT (%):
+                      </TableCell>
+                      <TableCell colSpan={2} className="border">
+                        {Number(watch("vat_amount") || 0).toFixed(2)}
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell
+                        colSpan={type === "update_po" ? 5 : 4}
+                        className="text-end"
+                      >
+                        TOTAL (VAT INC.):
+                      </TableCell>
+                      <TableCell colSpan={2} className="border">
+                        {Number(watch("total_amount") || 0).toFixed(2)}
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell
+                        colSpan={type === "update_po" ? 5 : 4}
+                        className="text-end"
+                      >
+                        W/TAX (%):
+                      </TableCell>
+                      <TableCell colSpan={2} className="border">
+                        <FormInput
+                          type="number"
+                          name="w_tax_percentage"
+                          control={control}
+                          errors={errors}
+                        />
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell
+                        colSpan={type === "update_po" ? 5 : 4}
+                        className="text-end"
+                      >
+                        W/TAX AMOUNT:
+                      </TableCell>
+                      <TableCell colSpan={2} className="border">
+                        {Number(watch("w_tax_amount") || 0).toFixed(2)}
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell
+                        colSpan={type === "update_po" ? 5 : 4}
+                        className="text-end"
+                      >
+                        DUE AMOUNT:
+                      </TableCell>
+                      <TableCell colSpan={2} className="border">
+                        {Number(watch("due_amount") || 0).toFixed(2)}
+                      </TableCell>
+                    </TableRow>
+                  </TableFooter>
+                </>
+              }
+            />
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-3">
+          <Button
+            type="button"
+            variant="outline"
+            className="min-w-24"
+            onClick={() => {
+              reset();
+              onCancel();
+            }}
+          >
+            Cancel
+          </Button>
+          <Button type="submit" loading={isSubmitting} className="min-w-24">
+            Submit
+          </Button>
+        </div>
+      </form>
+    </Form>
+  );
+}
